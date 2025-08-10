@@ -1,29 +1,27 @@
-# ========== Build ==========
+# ============ Build stage ============
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
-# Copy all source (to resolve ProjectReferences)
+# نسخ ملفات المشاريع (عشان restore سريع)
+COPY BRIXEL_core/BRIXEL_core.csproj BRIXEL_core/
+COPY BRIXEL_infrastructure/BRIXEL_infrastructure.csproj BRIXEL_infrastructure/
+COPY BRIXEL/BRIXEL.csproj BRIXEL/
+
+RUN dotnet restore BRIXEL/BRIXEL.csproj
+
+# نسخ كل السورس وبناء Publish
 COPY . .
+RUN dotnet publish BRIXEL/BRIXEL.csproj -c Release -o /app/out
 
-# Restore on the solution or project (solution is safer with dependencies)
-RUN dotnet restore ./BRIXEL/BRIXEL.sln
-
-# Publish the web project
-RUN dotnet publish ./BRIXEL/BRIXEL.csproj -c Release -o /app/out
-
-# ========== Run ==========
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
+# ============ Runtime stage ============
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
 
-# Copy the output
-COPY --from=build /app/out .
+# لازم يسمع على $PORT اللي Render بيضبطه
+ENV ASPNETCORE_URLS=http://0.0.0.0:${PORT}
 
-# Render passes PORT as an environment variable; let Kestrel listen on it
+# (اختياري) تعطيل detailed errors على الإنتاج تلقائيًا
 ENV ASPNETCORE_ENVIRONMENT=Production
-ENV ASPNETCORE_URLS=http://0.0.0.0:$PORT
 
-# Render's default port is often 10000 (EXPOSE is optional)
-EXPOSE 10000
-
-# DLL name according to .csproj = BRIXEL.dll
+COPY --from=build /app/out .
 ENTRYPOINT ["dotnet", "BRIXEL.dll"]
