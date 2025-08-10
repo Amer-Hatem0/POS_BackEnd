@@ -5,6 +5,7 @@ using BRIXEL_core.Models;
 using BRIXEL_infrastructure.Data;
 using BRIXEL_infrastructure.Repositories;
 using BRIXEL_infrastructure.SeedData;
+using BRIXEL_infrastructure.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -55,7 +56,7 @@ namespace BRIXEL
             builder.Services.AddScoped<ITestimonialService, TestimonialService>();
             builder.Services.AddScoped<IAboutSectionRepository, AboutSectionRepository>();
             builder.Services.AddScoped<IWhyChooseUsRepository, WhyChooseUsRepository>();
-
+            builder.Services.AddScoped<IImageService, CloudinaryImageService>();
             // -------- 4) JWT --------
             var jwtKey = builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("Jwt__Key");
             var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? Environment.GetEnvironmentVariable("Jwt__Issuer");
