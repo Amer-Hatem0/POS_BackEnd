@@ -20,7 +20,7 @@ namespace BRIXEL
         {
             var builder = WebApplication.CreateBuilder(args);
 
-            // Connection string: من appsettings أو من Environment (Render)
+            // -------- 1) Connection String (من appsettings أو من Env في Render) --------
             var conn =
                 builder.Configuration.GetConnectionString("DefaultConnection") ??
                 Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection");
@@ -29,20 +29,21 @@ namespace BRIXEL
                 throw new InvalidOperationException("Database connection string is missing.");
 
             builder.Services.AddDbContext<AppDbContext>(opt =>
-                opt.UseMySql(conn, ServerVersion.AutoDetect(conn), sql =>
-                {
-                    sql.CommandTimeout(120);
-                })
-                .EnableSensitiveDataLogging(builder.Environment.IsDevelopment())
-                .EnableDetailedErrors(builder.Environment.IsDevelopment())
+                opt
+                    .UseMySql(conn, ServerVersion.AutoDetect(conn), my =>
+                    {
+                        my.CommandTimeout(120);
+                    })
+                    .EnableDetailedErrors(builder.Environment.IsDevelopment())
+                    .EnableSensitiveDataLogging(builder.Environment.IsDevelopment())
             );
 
-            // Identity
+            // -------- 2) Identity --------
             builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
                 .AddEntityFrameworkStores<AppDbContext>()
                 .AddDefaultTokenProviders();
 
-            // Repos/Services (DI)
+            // -------- 3) DI (Repositories/Services) --------
             builder.Services.AddScoped<ILoginService, LoginService>();
             builder.Services.AddScoped<IServiceRepository, ServiceRepository>();
             builder.Services.AddScoped<IAdvertisementRepository, AdvertisementRepository>();
@@ -55,7 +56,7 @@ namespace BRIXEL
             builder.Services.AddScoped<IAboutSectionRepository, AboutSectionRepository>();
             builder.Services.AddScoped<IWhyChooseUsRepository, WhyChooseUsRepository>();
 
-            // JWT
+            // -------- 4) JWT --------
             var jwtKey = builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("Jwt__Key");
             var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? Environment.GetEnvironmentVariable("Jwt__Issuer");
             var jwtAudience = builder.Configuration["Jwt:Audience"] ?? Environment.GetEnvironmentVariable("Jwt__Audience");
@@ -82,7 +83,7 @@ namespace BRIXEL
                 };
             });
 
-            // CORS
+            // -------- 5) CORS --------
             builder.Services.AddCors(options =>
             {
                 options.AddPolicy("AllowFrontend", policy =>
@@ -91,7 +92,7 @@ namespace BRIXEL
                         "http://localhost:5173",
                         "http://localhost:5000",
                         "http://localhost:8080"
-                    // أضف دومين الفرونت بعد النشر: "https://your-frontend-domain.com"
+                    // أضف هنا دومين الفرونت الحقيقي لاحقًا: "https://your-frontend-domain.com"
                     )
                     .AllowAnyHeader()
                     .AllowAnyMethod()
@@ -99,13 +100,13 @@ namespace BRIXEL
                 });
             });
 
-            // حدود رفع الملفات (للصور)
+            // -------- 6) رفع حجم الملفات (للصور) --------
             builder.Services.Configure<FormOptions>(o =>
             {
                 o.MultipartBodyLengthLimit = 50 * 1024 * 1024; // 50MB
             });
 
-            // Forwarded headers (خلف بروكسي مثل Render)
+            // -------- 7) Proxy headers (مثل Render) --------
             builder.Services.Configure<ForwardedHeadersOptions>(o =>
             {
                 o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
@@ -113,36 +114,39 @@ namespace BRIXEL
                 o.KnownProxies.Clear();
             });
 
+            // -------- 8) Swagger toggle عبر متغير بيئة --------
+            bool enableSwagger =
+                builder.Configuration.GetValue<bool>("Swagger:Enabled") ||
+                string.Equals(Environment.GetEnvironmentVariable("Swagger__Enabled"), "true", StringComparison.OrdinalIgnoreCase);
+
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
 
             var app = builder.Build();
 
-            // تشغيل Seeder فقط في Development أو لو SEED_DB=true
+            // -------- 9) Seeding فقط في Development أو لو SEED_DB=true --------
             using (var scope = app.Services.CreateScope())
             {
-                var services = scope.ServiceProvider;
-                var env = services.GetRequiredService<IHostEnvironment>();
+                var env = scope.ServiceProvider.GetRequiredService<IHostEnvironment>();
                 var seedFlag = Environment.GetEnvironmentVariable("SEED_DB");
-
                 if (env.IsDevelopment() || string.Equals(seedFlag, "true", StringComparison.OrdinalIgnoreCase))
                 {
-                    var context = services.GetRequiredService<AppDbContext>();
-                    var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
-                    var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+                    var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+                    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
                     await DatabaseSeeder.SeedAsync(context, userManager, roleManager);
                 }
             }
 
-            if (app.Environment.IsDevelopment())
+            if (app.Environment.IsDevelopment() || enableSwagger)
             {
                 app.UseSwagger();
                 app.UseSwaggerUI();
             }
 
             app.UseForwardedHeaders();
-            app.UseHttpsRedirection();
+            app.UseHttpsRedirection();      // Render يمرر X-Forwarded-Proto (التحذير إن ظهر فهو غير مؤذٍ)
             app.UseStaticFiles();
 
             app.UseRouting();
