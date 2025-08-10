@@ -7,45 +7,65 @@ namespace BRIXEL_infrastructure.SeedData
 {
     public static class DatabaseSeeder
     {
-        public static async Task SeedAsync(AppDbContext context, UserManager<ApplicationUser> userManager, RoleManager<IdentityRole> roleManager)
+        public static async Task SeedAsync(
+            AppDbContext context,
+            UserManager<ApplicationUser> userManager,
+            RoleManager<IdentityRole> roleManager)
         {
-            await context.Database.MigrateAsync();
+            // مهم: لا تعمل Migrate/EnsureCreated هنا على الإنتاج
+            // نتعامل مع جداول جاهزة من الـ dump
+            await EnsureRolesAsync(roleManager);
+            await EnsureAdminUserAsync(userManager, roleManager);
+        }
 
-            
-            if (!await roleManager.RoleExistsAsync("Admin"))
-                await roleManager.CreateAsync(new IdentityRole("Admin"));
+        private static async Task EnsureRolesAsync(RoleManager<IdentityRole> roleManager)
+        {
+            var roles = new[] { "Admin", "Publisher" };
 
-            if (!await roleManager.RoleExistsAsync("Publisher"))
-                await roleManager.CreateAsync(new IdentityRole("Publisher"));
-
-
-            if (!await userManager.Users.AnyAsync())
+            foreach (var role in roles)
             {
-                var admin = new ApplicationUser
+                if (!await roleManager.RoleExistsAsync(role))
                 {
-                    UserName = "brixelPs",
-                    Email = "support@brixel.tech",
+                    await roleManager.CreateAsync(new IdentityRole(role));
+                }
+            }
+        }
+
+        private static async Task EnsureAdminUserAsync(
+            UserManager<ApplicationUser> userManager,
+            RoleManager<IdentityRole> roleManager)
+        {
+            // نقرأ القيم من Environment Variables إن وُجدت
+            var adminUserName = Environment.GetEnvironmentVariable("ADMIN_USERNAME") ?? "brixelPs";
+            var adminEmail = Environment.GetEnvironmentVariable("ADMIN_EMAIL") ?? "support@brixel.tech";
+            var adminPassword = Environment.GetEnvironmentVariable("ADMIN_PASSWORD") ?? "Admin@123";
+
+            // ابحث باليوزرنيم أو بالإيميل
+            var userByName = await userManager.Users.FirstOrDefaultAsync(u => u.UserName == adminUserName);
+            var userByMail = await userManager.FindByEmailAsync(adminEmail);
+            var admin = userByName ?? userByMail;
+
+            if (admin == null)
+            {
+                admin = new ApplicationUser
+                {
+                    UserName = adminUserName,
+                    Email = adminEmail,
                     FullName = "Admin",
                     EmailConfirmed = true,
                     IsActive = true
                 };
 
-                var result = await userManager.CreateAsync(admin, "Admin@123");
-
-                if (result.Succeeded)
-                {
-                    await userManager.AddToRoleAsync(admin, "Admin");
-                    Console.WriteLine(" Admin user created.");
-                }
-                else
-                {
-                    foreach (var error in result.Errors)
-                    {
-                        Console.WriteLine($" Error: {error.Code} - {error.Description}");
-                    }
-                }
+                var createRes = await userManager.CreateAsync(admin, adminPassword);
+                if (!createRes.Succeeded)
+                    throw new Exception("Failed to create admin user: " + string.Join("; ", createRes.Errors.Select(e => $"{e.Code}:{e.Description}")));
             }
 
+            // تأكيد إضافة الدور Admin
+            if (!await userManager.IsInRoleAsync(admin, "Admin"))
+            {
+                await userManager.AddToRoleAsync(admin, "Admin");
+            }
         }
     }
 }

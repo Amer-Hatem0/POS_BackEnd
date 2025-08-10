@@ -1,14 +1,16 @@
-﻿using BRIXEL.Middlewares;
+﻿using System.Text;
+using BRIXEL.Middlewares;
 using BRIXEL_core.Interface;
 using BRIXEL_core.Models;
 using BRIXEL_infrastructure.Data;
 using BRIXEL_infrastructure.Repositories;
 using BRIXEL_infrastructure.SeedData;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using System.Text;
 
 namespace BRIXEL
 {
@@ -18,18 +20,29 @@ namespace BRIXEL
         {
             var builder = WebApplication.CreateBuilder(args);
 
- 
-            var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-            builder.Services.AddDbContext<AppDbContext>(options =>
-                options.UseMySql(connectionString, new MySqlServerVersion(new Version(8, 0, 36)))
+            // Connection string: من appsettings أو من Environment (Render)
+            var conn =
+                builder.Configuration.GetConnectionString("DefaultConnection") ??
+                Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection");
+
+            if (string.IsNullOrWhiteSpace(conn))
+                throw new InvalidOperationException("Database connection string is missing.");
+
+            builder.Services.AddDbContext<AppDbContext>(opt =>
+                opt.UseMySql(conn, ServerVersion.AutoDetect(conn), sql =>
+                {
+                    sql.CommandTimeout(120);
+                })
+                .EnableSensitiveDataLogging(builder.Environment.IsDevelopment())
+                .EnableDetailedErrors(builder.Environment.IsDevelopment())
             );
 
-         
+            // Identity
             builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
                 .AddEntityFrameworkStores<AppDbContext>()
                 .AddDefaultTokenProviders();
 
-       
+            // Repos/Services (DI)
             builder.Services.AddScoped<ILoginService, LoginService>();
             builder.Services.AddScoped<IServiceRepository, ServiceRepository>();
             builder.Services.AddScoped<IAdvertisementRepository, AdvertisementRepository>();
@@ -42,23 +55,26 @@ namespace BRIXEL
             builder.Services.AddScoped<IAboutSectionRepository, AboutSectionRepository>();
             builder.Services.AddScoped<IWhyChooseUsRepository, WhyChooseUsRepository>();
 
+            // JWT
+            var jwtKey = builder.Configuration["Jwt:Key"] ?? Environment.GetEnvironmentVariable("Jwt__Key");
+            var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? Environment.GetEnvironmentVariable("Jwt__Issuer");
+            var jwtAudience = builder.Configuration["Jwt:Audience"] ?? Environment.GetEnvironmentVariable("Jwt__Audience");
 
-            var jwtKey = builder.Configuration["Jwt:Key"];
-            var jwtIssuer = builder.Configuration["Jwt:Issuer"];
-            var jwtAudience = builder.Configuration["Jwt:Audience"];
+            if (string.IsNullOrWhiteSpace(jwtKey))
+                throw new InvalidOperationException("Jwt:Key is missing.");
 
-            builder.Services.AddAuthentication(options =>
+            builder.Services.AddAuthentication(o =>
             {
-                options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+                o.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                o.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
             })
-            .AddJwtBearer(options =>
+            .AddJwtBearer(o =>
             {
-                options.TokenValidationParameters = new TokenValidationParameters
+                o.TokenValidationParameters = new TokenValidationParameters
                 {
-                    ValidateIssuer = true,
+                    ValidateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer),
                     ValidIssuer = jwtIssuer,
-                    ValidateAudience = true,
+                    ValidateAudience = !string.IsNullOrWhiteSpace(jwtAudience),
                     ValidAudience = jwtAudience,
                     ValidateLifetime = true,
                     ValidateIssuerSigningKey = true,
@@ -66,99 +82,80 @@ namespace BRIXEL
                 };
             });
 
-        
+            // CORS
             builder.Services.AddCors(options =>
             {
                 options.AddPolicy("AllowFrontend", policy =>
                 {
                     policy.WithOrigins(
                         "http://localhost:5173",
-                          "http://localhost:5000",
-                        "http://localhost:8080"   
+                        "http://localhost:5000",
+                        "http://localhost:8080"
+                    // أضف دومين الفرونت بعد النشر: "https://your-frontend-domain.com"
                     )
-                    .AllowAnyMethod()
                     .AllowAnyHeader()
+                    .AllowAnyMethod()
                     .AllowCredentials();
                 });
             });
 
+            // حدود رفع الملفات (للصور)
+            builder.Services.Configure<FormOptions>(o =>
+            {
+                o.MultipartBodyLengthLimit = 50 * 1024 * 1024; // 50MB
+            });
 
-           
+            // Forwarded headers (خلف بروكسي مثل Render)
+            builder.Services.Configure<ForwardedHeadersOptions>(o =>
+            {
+                o.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+                o.KnownNetworks.Clear();
+                o.KnownProxies.Clear();
+            });
+
             builder.Services.AddControllers();
             builder.Services.AddEndpointsApiExplorer();
             builder.Services.AddSwaggerGen();
 
             var app = builder.Build();
 
-         
+            // تشغيل Seeder فقط في Development أو لو SEED_DB=true
             using (var scope = app.Services.CreateScope())
             {
                 var services = scope.ServiceProvider;
-                var context = services.GetRequiredService<AppDbContext>();
-                var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
-                var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
-                await DatabaseSeeder.SeedAsync(context, userManager, roleManager);
+                var env = services.GetRequiredService<IHostEnvironment>();
+                var seedFlag = Environment.GetEnvironmentVariable("SEED_DB");
+
+                if (env.IsDevelopment() || string.Equals(seedFlag, "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    var context = services.GetRequiredService<AppDbContext>();
+                    var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
+                    var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+                    await DatabaseSeeder.SeedAsync(context, userManager, roleManager);
+                }
             }
 
-        
-
-            app.Use(async (context, next) =>
-            {
-                var origin = context.Request.Headers["Origin"].ToString();
-                var method = context.Request.Method;
-
-                if (!string.IsNullOrEmpty(origin))
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine("🔍 CORS Request Detected:");
-                    Console.ResetColor();
-                    Console.WriteLine($"  → Origin: {origin}");
-                    Console.WriteLine($"  → Method: {method}");
-                    Console.WriteLine($"  → Path: {context.Request.Path}");
-
-                    context.Response.OnStarting(() =>
-                    {
-                        if (!context.Response.Headers.ContainsKey("Access-Control-Allow-Origin"))
-                        {
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine("❌ CORS BLOCKED → Header 'Access-Control-Allow-Origin' is missing.");
-                            Console.ResetColor();
-                        }
-                        else
-                        {
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine("✅ CORS ALLOWED → Header applied successfully.");
-                            Console.ResetColor();
-                        }
-                        return Task.CompletedTask;
-                    });
-                }
-
-                await next();
-            });
-
-      
             if (app.Environment.IsDevelopment())
             {
                 app.UseSwagger();
                 app.UseSwaggerUI();
             }
 
-      
+            app.UseForwardedHeaders();
             app.UseHttpsRedirection();
             app.UseStaticFiles();
 
-            app.UseRouting();  
-
-            app.UseCors("AllowFrontend");  
+            app.UseRouting();
+            app.UseCors("AllowFrontend");
 
             app.UseAuthentication();
             app.UseAuthorization();
 
             app.UseGlobalExceptionHandler();
 
+            app.MapGet("/ping", () => Results.Ok("pong"));
             app.MapControllers();
- 
+
             app.Run();
         }
     }
