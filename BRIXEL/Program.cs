@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using BRIXEL.Middlewares;
 using BRIXEL_core.Interface;
 using BRIXEL_core.Models;
@@ -93,7 +93,7 @@ namespace BRIXEL
                         "http://localhost:5173",
                         "http://localhost:5000",
                         "http://localhost:8080"
-                    // أضف هنا دومين الفرونت الحقيقي لاحقًا: "https://your-frontend-domain.com"
+                "https://brixel-ps.netlify.app/"
                     )
                     .AllowAnyHeader()
                     .AllowAnyMethod()
